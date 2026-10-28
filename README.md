@@ -5,8 +5,6 @@
 
 Codex Cleaner 是一个以 SwiftUI 和 AppKit 编写的 macOS 原生工具，用于浏览、筛选、预览和清理本机 Codex 会话索引。最低要求 macOS 14 和 Swift 6.0。当前界面为简体中文。
 
-项目参考了 [Neodisk](https://github.com/tkslucas/Neodisk) 的侧栏、列表和检查器布局；本项目独立实现，没有复制其代码或素材。Codex Cleaner 是社区项目，**不是 OpenAI 官方产品，也未获 OpenAI 背书**。
-
 ![会话内容预览](docs/images/preview.png)
 
 ## 功能

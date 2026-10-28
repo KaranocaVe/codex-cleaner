@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 8 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build and test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare isolated test environment
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+        run: |
+          mkdir -p "$CODEX_HOME"
+          brew install zstd
+
+      - name: Build and test with coverage
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_CLEANER_TEST_REAL_DATA: "0"
+        run: |
+          set -o pipefail
+          swift test --enable-code-coverage 2>&1 | tee "$RUNNER_TEMP/swift-test.log"
+
+      - name: Build app bundle
+        run: ./build-app.sh --arch "${{ matrix.arch }}" --output "$RUNNER_TEMP/CodexCleaner-${{ matrix.arch }}.app"
+
+      - name: Upload build and test artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/swift-test.log
+            .build/debug/codecov
+            ${{ runner.temp }}/CodexCleaner-${{ matrix.arch }}.app
+          if-no-files-found: warn
+          retention-days: 14
+
+  quality:
+    name: Workflow and repository policy
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install actionlint
+        run: brew install actionlint shellcheck
+
+      - name: Lint workflows
+        run: actionlint .github/workflows/*.yml
+
+      - name: Check repository policy
+        run: python3 scripts/check_repository.py
+
+      - name: Check build script syntax
+        run: bash -n build-app.sh
+
+      - name: Lint build script
+        run: shellcheck build-app.sh
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: macos-15
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [swift, python]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@793b778da9c9275a0f276522b27cb5fc14bba279 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.language == 'swift' && 'manual' || 'none' }}
+
+      - name: Build Swift for CodeQL
+        if: matrix.language == 'swift'
+        run: swift build
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@793b778da9c9275a0f276522b27cb5fc14bba279 # v4

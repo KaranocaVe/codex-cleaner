@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-package:
+    name: Build and test release (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          test "$TAG_NAME" = "v$(cat VERSION)"
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Prepare isolated test environment
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+        run: |
+          mkdir -p "$CODEX_HOME"
+          brew install zstd
+
+      - name: Build and test with coverage
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_CLEANER_TEST_REAL_DATA: "0"
+        run: |
+          set -o pipefail
+          swift test --enable-code-coverage 2>&1 | tee "$RUNNER_TEMP/swift-test.log"
+
+      - name: Build app bundle
+        run: ./build-app.sh --arch "${{ matrix.arch }}" --output "$RUNNER_TEMP/CodexCleaner-${{ matrix.arch }}.app"
+
+      - name: Verify app bundle
+        env:
+          APP_PATH: ${{ runner.temp }}/CodexCleaner-${{ matrix.arch }}.app
+          APP_ARCH: ${{ matrix.arch }}
+        run: |
+          codesign --verify --deep --strict "$APP_PATH"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")" = "$(cat VERSION)"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")" = "$(cat BUILD_NUMBER)"
+          lipo -archs "$APP_PATH/Contents/MacOS/CodexCleaner" | tr ' ' '\n' | grep -Fx "$APP_ARCH"
+
+      - name: Package app and checksum
+        run: |
+          archive="CodexCleaner-${GITHUB_REF_NAME}-${{ matrix.arch }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/CodexCleaner-${{ matrix.arch }}.app" "$RUNNER_TEMP/$archive"
+          (cd "$RUNNER_TEMP" && shasum -a 256 "$archive" > "$archive.sha256")
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/CodexCleaner-${{ github.ref_name }}-${{ matrix.arch }}.zip
+            ${{ runner.temp }}/CodexCleaner-${{ github.ref_name }}-${{ matrix.arch }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: build-test-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --title "$GITHUB_REF_NAME" --generate-notes
